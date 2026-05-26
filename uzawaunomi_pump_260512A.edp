@@ -1,0 +1,107 @@
+// uzawaunomi_260512A.edp
+// 境界条件のベクトル化による、中心軸駆動ストークス流れの計算
+// Mesh; shroud is void (out of space/system)
+// Stokes equation is solved
+// setting flow velocity on center axis
+//       center line (pipe surface)
+// --- 1. メッシュ作成 ---
+real w = 0.25;      // 容器半径
+real H = 0.8;       // 容器高さ
+real S = 0.1;       // 内部構造物下端
+real H1 = 0.6;      // 内部構造物高さ
+real d = 0.15;      // 内部構造物内径
+real w1 = 0.03;     // 内部構造物厚み
+real rpipe = 0.02;  // 中心軸回避用パイプ半径
+real d2 = 0.025;    // frozen wall
+
+border C1(t=rpipe, w-d2) {x=t; y=d2; label=1;}
+border C2(t=d2, H){x=w-d2; y=t; label=2;}
+border C3(t=w-d2,rpipe){x=t; y=H; label=3;}
+border Cpipe(t=H,d2){x=rpipe; y=t; label=12;}
+
+border D1(t=-pi,0){x=d+w1/2.0 + (w1/2.0)*cos(t); y=S + (w1/2.0)*sin(t); label=21;}
+border D2(t=S, S+H1) {x=d+w1; y=t; label=22;}
+border D3(t=0, pi) {x=d+w1/2.0 + (w1/2.0)*cos(t); y=S+H1 + (w1/2.0)*sin(t); label=23;}
+border D4(t=S+H1, S) {x=d; y=t; label=24;}
+
+mesh Th = buildmesh(C1(20) + C2(80) + C3(20) + Cpipe(80) + D1(-10) + D2(-40) + D3(-10) + D4(-40));
+plot(Th,wait=1);
+
+// --- 2. 有限要素空間の定義 ---
+fespace Xh(Th, P2);
+Xh u1, u2;      // 半径方向流速(u1), 軸方向流速(u2)
+Xh v1;          // テスト関数（共通で利用）
+Xh bc1, bc2;    // 境界条件ベクトル
+Xh b;           // 右辺ベクトル計算用
+real Vpump = 5.0;           //強制流速 [m/s]
+
+Xh fP = ( (x >= rpipe && x < d) && (y >= S+H1*0.05 && y <= S+H1*0.15) ) ? Vpump : 0.0;
+
+// 積分形式でベクトル化（pumpからの力を積分して加算）=int2d(Th)( fP * v )
+varf vSource(u, v) = int2d(Th)( fP * v ); 
+real[int] fPvec = vSource(0, Xh); // ここで各節点への「配分量」が計算される
+
+fespace Mh(Th, P1);
+Mh p, ppp;      // 圧力(p), 作業用圧力(ppp)
+
+// --- 3. 変分形式の定義（境界条件の分離） ---
+
+// A行列（共通のラプラシアン）
+// 第1引数(u1)は未知関数、第2引数(v1)はテスト関数
+varf vA(u1, v1) = int2d(Th)( dx(u1)*dx(v1) + dy(u1)*dy(v1) ); // solver用にのみ使うのでonは後述
+
+// u1（x方向）用の境界条件設定：全ての壁面で流速 0
+varf vbc1(u1, v1) = int2d(Th)( dx(u1)*dx(v1) + dy(u1)*dy(v1) )
+    + on(1, 2, 3, 12, 22, 24, u1=0);
+
+// u2（y方向）用の境界条件設定：中心軸パイプ(label 12)以外で流速 0
+varf vbc2(u1, v1) = int2d(Th)( dx(u1)*dx(v1) + dy(u1)*dy(v1) )
+    + on(1, 2, 3, 22, u1=0); 
+
+// B行列（発散/勾配項）
+varf vbx (u1, q) = int2d(Th)( -(dx(u1)*q) );
+varf vby (u1, q) = int2d(Th)( -(dy(u1)*q) );
+
+// --- 4. 行列とベクトルの組み立て ---
+matrix A = vbc1(Xh, Xh, solver=CG); // u1とu2で不変な左辺行列（対角成分を1にする処理含む）
+matrix Bx = vbx(Xh, Mh);
+matrix By = vby(Xh, Mh);
+
+// 境界条件の「右辺への寄与分」を抽出
+bc1[] = vbc1(0, Xh); // u1用の境界条件ベクトル（全て0なので基本は0）
+bc2[] = vbc2(0, Xh); // u2用の境界条件ベクトル（label 12の部分に値が入る）
+
+// --- 5. Uzawa法の反復関数 ---
+func real[int] divup (real[int] & pp){
+    // 1. x成分 u1 の計算
+    b[] = Bx'*pp;
+    b[] *= -1;
+    b[] += bc1[];  // 境界条件の寄与を加算
+    u1[] = A^-1 * b[];
+
+    // 2. y成分 u2 の計算
+    b[] = By'*pp;
+    b[] *= -1;
+
+    // 積分して加算(int2d)
+    // 境界条件の寄与(bc2)と、積分されたポンプの力(fPvec)を足す
+    b[] += bc2[];
+    b[] += fPvec;
+
+    u2[] = A^-1 * b[];
+
+    // 3. 発散（div u）の計算
+    ppp[] = Bx * u1[]; 
+    ppp[] += By * u2[]; 
+
+    return ppp[];
+}
+
+// --- 6. 計算実行 ---
+p = 0; // 初期圧力
+LinearCG(divup, p[], eps=1.e-6, nbiter=100); // 収束計算
+divup(p[]); // 最終的な流速場の更新
+
+// --- 7. 結果の表示 ---
+plot(p, wait=1, value=true, coef=0.1, cmm="Stokes Flow (Pipe Drive)");
+plot([u1,u2], wait=1, value=true, coef=0.1, cmm="Stokes Flow (Pipe Drive)");
