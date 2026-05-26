@@ -1,0 +1,37 @@
+// mesh_test_true.edp
+real w = 0.25;
+real H = 0.8; // 原子炉容器高さ
+real S = 0.1; // シュラウド下端
+real H1 = 0.6; // シュラウド高さ
+real d = 0.15; // シュラウド内径
+real w1 = 0.03; // シュラウド厚み
+real rpipe = 0.02; // 中心軸回避用パイプ半径
+real d2 = 0.025; // frozen wall
+int regFluid = 10;
+int regSolid = 20;
+// --- 境界の定義の中で、直接 region を指定する ---
+// 外枠（C1〜Cpipe）で囲まれた内側全体を、まず「流体領域(10)」にする
+border C1(t=rpipe, w-d2) {x=t; y=d2; label=1; region=regFluid;}
+border C2(t=d2, H){x=w-d2; y=t; label=2; region=regFluid;}
+border C3(t=w-d2,rpipe){x=t; y=H; label=3; region=regFluid;}
+border Cpipe(t=H,d2){x=rpipe; y=t; label=12; region=regFluid;}
+// シュラウド（D1〜D4）で囲まれた内側を、新しく「固体領域(20)」として上書きする
+border D1(t=-pi,0){x=d+w1/2.0 + (w1/2.0)*cos(t); y=S + (w1/2.0)*sin(t); label=21;
+region=regSolid;}
+border D2(t=S, S+H1) {x=d+w1; y=t; label=22; region=regSolid;}
+border D3(t=0, pi) {x=d+w1/2.0 + (w1/2.0)*cos(t); y=S+H1 + (w1/2.0)*sin(t); label=23;
+region=regSolid;}
+border D4(t=S+H1, S) {x=d; y=t; label=24; region=regSolid;}
+// 【引数は、エラーログの通り「境界の足し算」1つだけにします】
+mesh Th = buildmesh(C1(20) + C2(80) + C3(20) + Cpipe(80) + D1(10) + D2(40) + D3(10) +
+D4(40));
+// 確認のため、FreeFEMが認識している領域番号（region）を逆に取得してみる
+int checkFluid = Th(rpipe + 0.01, H/2.0).region;
+int checkSolid = Th(d + w1/2.0, S + H1/2.0).region;
+//cout << "--- 領域分割結果 ---" << endl;
+//cout << "流体領域のID =" << checkFluid << " (意図した値: " << regFluid << ")" << endl;
+//cout << "固体領域のID =" << checkSolid << " (意図した値: " << regSolid << ")" << endl;
+cout <<"result of multi-domain"<< endl;
+cout << "fluid domain id="<< checkFluid << ", intented value " << regFluid  << endl;
+cout  << "solid domain id ="<<checkSolid <<", intented value "<< regSolid  << endl;
+plot(Th, wait=1, cmm="Multi-Domain Mesh");
